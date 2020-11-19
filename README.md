@@ -5,6 +5,13 @@
 代码基于[transformers](https://github.com/huggingface/transformers)，程序框架来源于[这里](https://huggingface.co/blog/how-to-train)。
 
 
+**transformers的安装**
+
+```sh
+cd transformers
+pip install -e .
+```
+
 
 #### 模型架构
 

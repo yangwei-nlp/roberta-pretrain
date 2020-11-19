@@ -4,24 +4,31 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+import time
+import configparser
 from typing import Dict
+from pathlib import Path
+
 import torch
 from torch.utils.data import Dataset
-from transformers.tokenization_utils import PreTrainedTokenizer
-from pathlib import Path
+
 from tokenizers import ByteLevelBPETokenizer
-import time
 
-class LineByLineTextDataset(Dataset):
-    """
-    This will be superseded by a framework-agnostic approach soon.
-    """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, file_path: str, block_size: int):
+class TextDataset(Dataset):
+    def __init__(self, tokenizer, file_path, block_size):
+        """
+        处理所有文本语料，得到固定长度的字符串以供训练
 
+        Args:
+            tokenizer: 分词器，用来将文本转化为词id
+            file_path: 训练语料的路径
+            block_size: 字符串最大长度
+        """
         self.examples = []
         t_0 = time.time()
-        f_paths = [str(x) for x in Path(file_path).glob("**/*.txt")][:10]
+        # f_paths = [str(x) for x in Path(file_path).glob("**/*.txt")][:100]  # 调试时可以打开这行代码，注释下行
+        f_paths = [str(x) for x in Path(file_path).glob("**/*.txt")]
         for f in f_paths:
             with open(f, encoding="utf-8") as fp:
                 text = fp.read()
@@ -61,7 +68,7 @@ class LineByLineTextDataset(Dataset):
         return lines
 
 
-def save_tokenizer(paths, vocab_size=21128, min_frequency=2):
+def train_tokenizer(paths, vocab_size=21128, min_frequency=2):
     """
     训练tokenizer，并保存到本地; 如果数据量大可能会很耗时.
 
@@ -85,19 +92,13 @@ def save_tokenizer(paths, vocab_size=21128, min_frequency=2):
     ])
     tokenizer.save_model("data/THUCBert")  # 保存分词器（其实就是个词典）
 
-
     return tokenizer
 
 
-def train(vocab_size, epoch, train_files_path, save_path):
+def train(epoch, vocab_size, train_files_path, save_path, learning_rate, save_steps, 
+        per_gpu_train_batch_size, gradient_accumulation_steps):
     """
     从头训练一个语言模型RoBERTa.
-
-    Args:
-        vocab_size: 词典大小
-        epoch: 训练次数
-        train_files_path: 预训练文件目录
-        save_path: 模型权重保存目录
     """
     from transformers import RobertaConfig
 
@@ -109,7 +110,7 @@ def train(vocab_size, epoch, train_files_path, save_path):
         type_vocab_size=1,
     )
 
-    # 直接用BERT的分词器
+    # 不训练，直接用BERT的分词器
     from transformers import BertTokenizer
     tokenizer = BertTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext", max_len=512)
     # 事实上，hfl/chinese-roberta-wwm-ext/vocab.txt == chinese_L-12_H-768_A-12/vocab.txt
@@ -129,14 +130,14 @@ def train(vocab_size, epoch, train_files_path, save_path):
 
             self.init_weights()
 
-    可以发现，RobertaForMaskedLM包含了roberta主体模型和一个语言模型输出层
+    可以发现，RobertaForMaskedLM包含了roberta主体模型(不含pooling层)和一个语言模型输出层
     """
     # 初始化模型
     model = RobertaForMaskedLM(config=config)
 
-    print(model.num_parameters())  # 将近6000万参数
+    print("参数数量: ", model.num_parameters())  # 1亿参数
 
-    dataset = LineByLineTextDataset(
+    dataset = TextDataset(
         tokenizer=tokenizer,
         file_path=train_files_path,
         block_size=512,
@@ -154,11 +155,11 @@ def train(vocab_size, epoch, train_files_path, save_path):
         output_dir=save_path,
         overwrite_output_dir=True,
         num_train_epochs=epoch,
-        per_gpu_train_batch_size=8,
-        save_steps=100,
+        per_gpu_train_batch_size=per_gpu_train_batch_size,
+        save_steps=save_steps,
         save_total_limit=2,
-        gradient_accumulation_steps=32,  # 32*8=256 batch_size
-        learning_rate=1e-4,
+        gradient_accumulation_steps=gradient_accumulation_steps,  # 32*8=256 batch_size
+        learning_rate=learning_rate,
         weight_decay=0.01,
         adam_epsilon=1e-6,
         warmup_steps=10000,
@@ -169,15 +170,14 @@ def train(vocab_size, epoch, train_files_path, save_path):
         args=training_args,
         data_collator=data_collator,
         train_dataset=dataset,
-        prediction_loss_only=True,
     )
 
     trainer.train()
 
-    trainer.save_model("data/THUCBert")
+    trainer.save_model(save_path)
 
 
-def check_model():
+def check_model(save_path):
     """
     通过判断句子是否通顺，来判断模型是否成功训练
     """
@@ -185,7 +185,7 @@ def check_model():
 
     fill_mask = pipeline(
         "fill-mask",
-        model="data/THUCBert",
+        model=save_path,
         tokenizer="bert-base-chinese"
     )
     print(fill_mask("我是你的[MASK]."))
@@ -193,7 +193,25 @@ def check_model():
 
 
 if __name__ == "__main__":
-    train(vocab_size=21128, epoch=2, train_files_path="/home/ai/yangwei/myResources/THUCNews", save_path="data")
-    check_model()
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+
+    # Args
+    epoch = config.getint('Parameters', 'epoch')
+    vocab_size = config.getint('Parameters', 'vocab_size')
+    train_files_path = config.get('Parameters', 'train_files_path')
+    save_path = config.get('Parameters', 'save_path')
+    learning_rate = config.getfloat('Parameters', 'learning_rate')
+    save_steps = config.getint('Parameters', 'save_steps')
+    per_gpu_train_batch_size = config.getint('Parameters', 'per_gpu_train_batch_size')
+    gradient_accumulation_steps = config.getint('Parameters', 'gradient_accumulation_steps')
+
+    train(
+        epoch, vocab_size, train_files_path, save_path, learning_rate, save_steps, 
+        per_gpu_train_batch_size, gradient_accumulation_steps
+    )
+    check_model(save_path)
+
     print("Over!!!")
-    # nohup python -u main.py > logs/pretrain-11-11.log 2>&1 &
+    # nohup python -u pretrain.py > logs/pretrain-11-11.log 2>&1 &
+
