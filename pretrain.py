@@ -2,7 +2,7 @@
 预训练RoBERTa，使用清华大学整理的新闻语料库-THUCNews
 """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 import time
 import configparser
@@ -39,8 +39,6 @@ class TextDataset(Dataset):
             if not lines:
                 continue
             batch_encoding = tokenizer(lines, add_special_tokens=True, truncation=True, max_length=block_size)
-            if "input_ids" not in batch_encoding:
-                print("Here...")
             tmp = batch_encoding["input_ids"]
             self.examples.extend([{"input_ids": torch.tensor(e, dtype=torch.long)} for e in tmp])
         self.examples = self.examples * 10  # same as roberta paper
@@ -90,7 +88,7 @@ def train_tokenizer(paths, vocab_size=21128, min_frequency=2):
         "<unk>",
         "<mask>",
     ])
-    tokenizer.save_model("data/THUCBert")  # 保存分词器（其实就是个词典）
+    tokenizer.save_model("data")  # 保存分词器（其实就是个词典）
 
     return tokenizer
 
@@ -213,5 +211,6 @@ if __name__ == "__main__":
     check_model(save_path)
 
     print("Over!!!")
-    # nohup python -u pretrain.py > logs/pretrain-11-11.log 2>&1 &
+    
+    # nohup python -u pretrain.py > logs/pretrain-11-24.log 2>&1 &
 
